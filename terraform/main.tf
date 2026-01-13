@@ -345,7 +345,7 @@ resource "aws_cloudwatch_dashboard" "firewall" {
           title  = "Lambda Performance"
           region = var.aws_region
           metrics = [
-            ["AWS/Lambda", "Duration", "FunctionName", "${var.project_name}-firewall", { stat = "Average" }],
+            ["AWS/Lambda", "Duration", "FunctionName", var.project_name, { stat = "Average" }],
             [".", "Invocations", ".", ".", { stat = "Sum", yAxis = "right" }]
           ]
           period = 300
@@ -360,7 +360,7 @@ resource "aws_cloudwatch_dashboard" "firewall" {
         properties = {
           title  = "Recent Blocked Attacks"
           region = var.aws_region
-          query  = "SOURCE '/aws/lambda/${var.project_name}-firewall' | fields @timestamp, attack_type, reason | filter blocked = true | sort @timestamp desc | limit 20"
+          query  = "SOURCE '/aws/lambda/${var.project_name}' | fields @timestamp, attack_type, reason | filter blocked = true | sort @timestamp desc | limit 20"
         }
       }
     ]
