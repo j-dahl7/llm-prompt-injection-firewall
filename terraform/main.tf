@@ -41,7 +41,7 @@ data "archive_file" "lambda_zip" {
 
 resource "aws_lambda_function" "firewall" {
   filename         = data.archive_file.lambda_zip.output_path
-  function_name    = "${var.project_name}-firewall"
+  function_name    = var.project_name
   role             = aws_iam_role.lambda_role.arn
   handler          = "firewall.handler"
   runtime          = "python3.12"
