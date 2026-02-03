@@ -347,9 +347,9 @@ def handler(event, context):
             # Detection-only mode - log but allow through
             logger.warning(f"DETECTION ONLY - Would have blocked: {analysis['attack_type']}")
 
-    # Prompt is clean - in production, forward to LLM backend here
-    # Publish allowed metric
-    publish_metric('AllowedPrompts')
+    else:
+        # Prompt is clean - publish allowed metric
+        publish_metric('AllowedPrompts')
     # For this lab, we just return success
     return {
         'statusCode': 200,
