@@ -20,9 +20,10 @@ import json
 import os
 import re
 import base64
+import hmac
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Tuple, Optional, Dict, Any
 
 import boto3
@@ -43,6 +44,32 @@ METRICS_NAMESPACE = 'LLMFirewall'
 BLOCK_MODE = os.environ.get('BLOCK_MODE', 'true').lower() == 'true'
 MAX_PROMPT_LENGTH = int(os.environ.get('MAX_PROMPT_LENGTH', '4000'))
 ENABLE_PII_CHECK = os.environ.get('ENABLE_PII_CHECK', 'true').lower() == 'true'
+API_SHARED_SECRET = os.environ.get('API_SHARED_SECRET', '')
+
+
+def _unauthorized_response(message: str, status_code: int = 401) -> Dict[str, Any]:
+    return {
+        'statusCode': status_code,
+        'headers': {'Content-Type': 'application/json'},
+        'body': json.dumps({'error': message})
+    }
+
+
+def is_authorized(event: Dict[str, Any]) -> bool:
+    if not API_SHARED_SECRET:
+        return False
+
+    headers = {str(k).lower(): v for k, v in (event.get('headers') or {}).items()}
+    api_key = headers.get('x-api-key')
+
+    if isinstance(api_key, str) and hmac.compare_digest(api_key, API_SHARED_SECRET):
+        return True
+
+    auth_header = headers.get('authorization', '')
+    if isinstance(auth_header, str) and auth_header.startswith('Bearer '):
+        return hmac.compare_digest(auth_header.split(' ', 1)[1], API_SHARED_SECRET)
+
+    return False
 
 
 # =============================================================================
@@ -245,7 +272,7 @@ def log_attack(attack_id: str, analysis: Dict[str, Any], source_ip: str, prompt_
     try:
         attack_table.put_item(Item={
             'attack_id': attack_id,
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'attack_type': analysis['attack_type'],
             'reason': analysis['reason'],
             'source_ip': source_ip,
@@ -287,22 +314,37 @@ def handler(event, context):
     """
     request_id = context.aws_request_id if context else str(uuid.uuid4())
 
+    if not API_SHARED_SECRET:
+        logger.error('API_SHARED_SECRET is not configured')
+        return _unauthorized_response('Firewall API is not configured securely', 500)
+
+    if not is_authorized(event):
+        return _unauthorized_response('Missing or invalid API key')
+
     # Parse request
     try:
         body = json.loads(event.get('body', '{}'))
-        prompt = body.get('prompt', '')
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         return {
             'statusCode': 400,
             'headers': {'Content-Type': 'application/json'},
             'body': json.dumps({'error': 'Invalid JSON body'})
         }
 
-    if not prompt:
+    if not isinstance(body, dict):
         return {
             'statusCode': 400,
             'headers': {'Content-Type': 'application/json'},
-            'body': json.dumps({'error': 'Missing prompt field'})
+            'body': json.dumps({'error': 'JSON body must be an object'})
+        }
+
+    prompt = body.get('prompt', '')
+
+    if not isinstance(prompt, str) or not prompt.strip():
+        return {
+            'statusCode': 400,
+            'headers': {'Content-Type': 'application/json'},
+            'body': json.dumps({'error': 'prompt must be a non-empty string'})
         }
 
     # Get source IP for logging

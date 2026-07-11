@@ -3,6 +3,9 @@
 *.tfstate
 *.tfstate.*
 .terraform.lock.hcl
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
 
 # Python
 __pycache__/
