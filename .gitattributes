@@ -1,0 +1,9 @@
+* text=auto
+.gitattributes text eol=lf
+.terraform-version text eol=lf
+*.hcl text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.tf text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
