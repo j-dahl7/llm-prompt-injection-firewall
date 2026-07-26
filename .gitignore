@@ -2,7 +2,13 @@
 .terraform/
 *.tfstate
 *.tfstate.*
-.terraform.lock.hcl
+*.tfplan
+tfplan
+.terraform.tfstate.lock.info
+*.tfvars
+*.tfvars.json
+crash.log
+crash.*.log
 
 # Python
 __pycache__/

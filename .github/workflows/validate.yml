@@ -1,0 +1,50 @@
+name: Validate LLM Firewall
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/validate.yml'
+      - '.terraform-version'
+      - 'lambda/**'
+      - 'terraform/**'
+      - 'tests/**'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/validate.yml'
+      - '.terraform-version'
+      - 'lambda/**'
+      - 'terraform/**'
+      - 'tests/**'
+
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: '1.14.9'
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Run offline unit tests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Validate Terraform and its dependency lock
+        run: |
+          terraform fmt -check -recursive terraform
+          terraform -chdir=terraform init -backend=false -input=false -lockfile=readonly
+          terraform -chdir=terraform validate

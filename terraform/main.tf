@@ -1,23 +1,24 @@
 # LLM Prompt Injection Firewall
-# Protects AI/LLM backends from prompt injection attacks
+# Demonstrates an authenticated prompt-screening boundary
 #
 # Architecture:
-# API Gateway -> Lambda (Firewall) -> Bedrock/LLM Backend
+# API Gateway -> Lambda screening -> allow/block JSON
 #                    |
-#                    v
-#              DynamoDB (Attack Logs)
-#              CloudWatch (Metrics)
+#                    +-> DynamoDB (bounded detection metadata)
+#                    +-> CloudWatch (logs and derived metrics)
+#
+# No model backend is included or invoked.
 
 terraform {
-  required_version = ">= 1.0"
+  required_version = ">= 1.0.0, < 2.0.0"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = "= 5.100.0"
     }
     archive = {
       source  = "hashicorp/archive"
-      version = "~> 2.0"
+      version = "= 2.8.0"
     }
   }
 }
@@ -26,22 +27,21 @@ provider "aws" {
   region = var.aws_region
 }
 
-data "aws_caller_identity" "current" {}
-data "aws_region" "current" {}
-
 # -----------------------------------------------------------------------------
 # Lambda Function - Prompt Injection Firewall
 # -----------------------------------------------------------------------------
 
 data "archive_file" "lambda_zip" {
-  type        = "zip"
-  source_dir  = "${path.module}/../lambda"
-  output_path = "${path.module}/lambda.zip"
+  type             = "zip"
+  source_dir       = "${path.module}/../lambda"
+  output_path      = "${path.module}/lambda.zip"
+  output_file_mode = "0666"
+  excludes         = ["__pycache__", "__pycache__/*", "*.pyc"]
 }
 
 resource "aws_lambda_function" "firewall" {
   filename         = data.archive_file.lambda_zip.output_path
-  function_name    = var.project_name
+  function_name    = "${var.project_name}-firewall"
   role             = aws_iam_role.lambda_role.arn
   handler          = "firewall.handler"
   runtime          = "python3.12"
@@ -51,11 +51,12 @@ resource "aws_lambda_function" "firewall" {
 
   environment {
     variables = {
-      ATTACK_LOG_TABLE   = aws_dynamodb_table.attack_logs.name
-      LOG_LEVEL          = "INFO"
-      BLOCK_MODE         = "true"  # Set to "false" for detection-only mode
-      MAX_PROMPT_LENGTH  = "4000"
-      ENABLE_PII_CHECK   = "true"
+      ATTACK_LOG_TABLE  = aws_dynamodb_table.attack_logs.name
+      API_SHARED_SECRET = var.api_shared_secret
+      LOG_LEVEL         = "INFO"
+      BLOCK_MODE        = "true" # Set to "false" for detection-only mode
+      MAX_PROMPT_LENGTH = "4000"
+      ENABLE_PII_CHECK  = "true"
     }
   }
 
@@ -63,7 +64,20 @@ resource "aws_lambda_function" "firewall" {
     mode = "Active"
   }
 
+  logging_config {
+    log_format            = "JSON"
+    application_log_level = "INFO"
+    system_log_level      = "WARN"
+    log_group             = aws_cloudwatch_log_group.lambda_logs.name
+  }
+
   tags = var.tags
+
+  depends_on = [
+    aws_cloudwatch_log_group.lambda_logs,
+    aws_iam_role_policy.lambda_logging,
+    aws_iam_role_policy_attachment.lambda_xray,
+  ]
 }
 
 # Lambda IAM Role
@@ -84,10 +98,22 @@ resource "aws_iam_role" "lambda_role" {
   tags = var.tags
 }
 
-# Lambda basic execution policy
-resource "aws_iam_role_policy_attachment" "lambda_basic" {
-  role       = aws_iam_role.lambda_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+# Lambda logging permission scoped to the pre-created function log group
+resource "aws_iam_role_policy" "lambda_logging" {
+  name = "${var.project_name}-lambda-logging"
+  role = aws_iam_role.lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+      ]
+      Resource = "${aws_cloudwatch_log_group.lambda_logs.arn}:*"
+    }]
+  })
 }
 
 # Lambda X-Ray tracing policy
@@ -104,35 +130,16 @@ resource "aws_iam_role_policy" "dynamodb_access" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect = "Allow"
-      Action = [
-        "dynamodb:PutItem",
-        "dynamodb:GetItem",
-        "dynamodb:Query"
-      ]
-      Resource = aws_dynamodb_table.attack_logs.arn
-    }]
-  })
-}
-
-# CloudWatch Metrics access for custom metrics
-resource "aws_iam_role_policy" "cloudwatch_metrics" {
-  name = "${var.project_name}-cloudwatch-metrics"
-  role = aws_iam_role.lambda_role.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
       Effect   = "Allow"
-      Action   = "cloudwatch:PutMetricData"
-      Resource = "*"
+      Action   = "dynamodb:PutItem"
+      Resource = aws_dynamodb_table.attack_logs.arn
     }]
   })
 }
 
 # CloudWatch Logs
 resource "aws_cloudwatch_log_group" "lambda_logs" {
-  name              = "/aws/lambda/${aws_lambda_function.firewall.function_name}"
+  name              = "/aws/lambda/${var.project_name}-firewall"
   retention_in_days = 14
 
   tags = var.tags
@@ -148,9 +155,9 @@ resource "aws_apigatewayv2_api" "prompt_api" {
   description   = "LLM Prompt Injection Firewall API"
 
   cors_configuration {
-    allow_headers = ["Content-Type", "Authorization"]
+    allow_headers = ["Content-Type", "Authorization", "X-API-Key"]
     allow_methods = ["POST", "OPTIONS"]
-    allow_origins = ["*"]
+    allow_origins = var.allowed_origins
     max_age       = 300
   }
 
@@ -161,6 +168,11 @@ resource "aws_apigatewayv2_stage" "default" {
   api_id      = aws_apigatewayv2_api.prompt_api.id
   name        = "$default"
   auto_deploy = true
+
+  default_route_settings {
+    throttling_burst_limit = 20
+    throttling_rate_limit  = 10
+  }
 
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.api_logs.arn
@@ -204,7 +216,7 @@ resource "aws_lambda_permission" "api_gateway" {
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.firewall.function_name
   principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.prompt_api.execution_arn}/*/*"
+  source_arn    = "${aws_apigatewayv2_api.prompt_api.execution_arn}/*/POST/prompt"
 }
 
 # -----------------------------------------------------------------------------
@@ -250,7 +262,8 @@ resource "aws_dynamodb_table" "attack_logs" {
 # CloudWatch Monitoring
 # -----------------------------------------------------------------------------
 
-# Custom metric for blocked attacks
+# Metrics are derived once from the handler's structured log entry. The Lambda
+# does not also call PutMetricData, which would double-count each request.
 resource "aws_cloudwatch_log_metric_filter" "blocked_attacks" {
   name           = "${var.project_name}-blocked"
   pattern        = "{ $.blocked = true }"
@@ -264,7 +277,6 @@ resource "aws_cloudwatch_log_metric_filter" "blocked_attacks" {
   }
 }
 
-# Custom metric for allowed prompts
 resource "aws_cloudwatch_log_metric_filter" "allowed_prompts" {
   name           = "${var.project_name}-allowed"
   pattern        = "{ $.blocked = false }"
@@ -345,7 +357,7 @@ resource "aws_cloudwatch_dashboard" "firewall" {
           title  = "Lambda Performance"
           region = var.aws_region
           metrics = [
-            ["AWS/Lambda", "Duration", "FunctionName", var.project_name, { stat = "Average" }],
+            ["AWS/Lambda", "Duration", "FunctionName", "${var.project_name}-firewall", { stat = "Average" }],
             [".", "Invocations", ".", ".", { stat = "Sum", yAxis = "right" }]
           ]
           period = 300
@@ -360,7 +372,7 @@ resource "aws_cloudwatch_dashboard" "firewall" {
         properties = {
           title  = "Recent Blocked Attacks"
           region = var.aws_region
-          query  = "SOURCE '/aws/lambda/${var.project_name}' | fields @timestamp, attack_type, reason | filter blocked = true | sort @timestamp desc | limit 20"
+          query  = "SOURCE '/aws/lambda/${var.project_name}-firewall' | fields @timestamp, attack_type, reason | filter blocked = true | sort @timestamp desc | limit 20"
         }
       }
     ]
