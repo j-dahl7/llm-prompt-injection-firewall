@@ -286,9 +286,15 @@ result as sufficient authorization.
 ### Add Rate Limiting
 
 Consider adding:
-- Per-IP throttling via API Gateway
-- AWS WAF integration for additional protection
-- Per-user limits stored in DynamoDB
+
+- AWS WAF rate-based rules when an IP-derived request limit is appropriate
+- Authenticated client or user quotas enforced against a trusted identity, not
+  an untrusted header
+- A shared quota store only after defining concurrency, expiry, and abuse-case
+  requirements
+
+The HTTP API stage throttle in this lab is an aggregate safety limit; it is not
+a per-IP or per-user authorization control.
 
 ---
 

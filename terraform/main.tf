@@ -155,7 +155,7 @@ resource "aws_apigatewayv2_api" "prompt_api" {
   description   = "LLM Prompt Injection Firewall API"
 
   cors_configuration {
-    allow_headers = ["Content-Type", "Authorization", "X-API-Key"]
+    allow_headers = ["Content-Type", "X-API-Key"]
     allow_methods = ["POST", "OPTIONS"]
     allow_origins = var.allowed_origins
     max_age       = 300
