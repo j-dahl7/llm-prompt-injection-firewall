@@ -15,11 +15,12 @@ patterns and returns an allow/block JSON decision. It addresses
 
 ## Validation Boundary
 
-The hardened July 25, 2026 revision passed offline Python unit tests and
-Terraform formatting/static validation. It was not deployed to AWS and no live
-API Gateway, Lambda, DynamoDB, CloudWatch, CORS, or model-backend request was
-tested for this revision. Regex screening is an educational control, not a
-complete prompt-injection defense or a production security boundary.
+The August 13, 2026 revision passed all 11 offline Python tests plus Terraform
+formatting, initialization with the locked providers, and static validation. It
+was not deployed to AWS and no live API Gateway, Lambda, DynamoDB, CloudWatch,
+CORS, or model-backend request was tested for this revision. Regex screening is
+an educational control, not a complete prompt-injection defense or a production
+security boundary.
 
 ## The Problem
 
