@@ -66,10 +66,6 @@ def is_authorized(event: Dict[str, Any]) -> bool:
     if isinstance(api_key, str) and hmac.compare_digest(api_key, API_SHARED_SECRET):
         return True
 
-    auth_header = headers.get('authorization', '')
-    if isinstance(auth_header, str) and auth_header.startswith('Bearer '):
-        return hmac.compare_digest(auth_header.split(' ', 1)[1], API_SHARED_SECRET)
-
     return False
 
 

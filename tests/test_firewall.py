@@ -56,6 +56,17 @@ class FirewallTests(unittest.TestCase):
         malformed_headers["headers"] = ["not", "an", "object"]
         self.assertEqual(self.firewall.handler(malformed_headers, None)["statusCode"], 401)
 
+    def test_rejects_bearer_secret_and_accepts_only_x_api_key(self):
+        bearer_event = self._event({"prompt": "hello"})
+        bearer_event["headers"] = {"Authorization": "Bearer " + "a" * 32}
+
+        self.assertEqual(self.firewall.handler(bearer_event, None)["statusCode"], 401)
+        self.assertTrue(
+            self.firewall.is_authorized(
+                {"headers": {"X-API-Key": "a" * 32}}
+            )
+        )
+
     def test_rejects_non_object_body(self):
         response = self.firewall.handler(self._event(["hello"]), None)
         self.assertEqual(response["statusCode"], 400)
@@ -140,6 +151,8 @@ class FirewallTests(unittest.TestCase):
         self.assertNotIn(self.firewall.API_SHARED_SECRET, outputs)
         self.assertIn("throttling_burst_limit = 20", main)
         self.assertIn("throttling_rate_limit  = 10", main)
+        self.assertIn('allow_headers = ["Content-Type", "X-API-Key"]', main)
+        self.assertNotIn('"Authorization"', main)
         self.assertIn("length(var.api_shared_secret) >= 32", variables)
         self.assertIn("length(var.allowed_origins) > 0", variables)
         self.assertIn('source_arn    = "${aws_apigatewayv2_api.prompt_api.execution_arn}/*/POST/prompt"', main)
