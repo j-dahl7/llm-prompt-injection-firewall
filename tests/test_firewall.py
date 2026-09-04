@@ -35,6 +35,39 @@ class FirewallTests(unittest.TestCase):
 
     def setUp(self):
         self.table.items.clear()
+        self.firewall.API_SHARED_SECRET = "a" * 32
+
+    def test_unicode_keys_return_an_auth_decision_without_leaking_values(self):
+        # Exercise the handler with strings that compare_digest(str, str)
+        # rejects, without invoking boto3 or relying on edge header behavior.
+        configured = "clé-🔐" * 8
+        self.firewall.API_SHARED_SECRET = configured
+        with self.assertLogs(level="INFO") as captured:
+            response = self.firewall.handler(self._event({"prompt": "hello"}, configured), None)
+        self.assertEqual(response["statusCode"], 200)
+        self.assertNotIn(configured, "\n".join(captured.output))
+        for supplied in (configured + "x", "a" * 32, "clé", "\ud800", None, 123):
+            with self.subTest(supplied_type=type(supplied).__name__):
+                with self.assertNoLogs(level="DEBUG"):
+                    response = self.firewall.handler(self._event({"prompt": "hello"}, supplied), None)
+                self.assertEqual(response["statusCode"], 401)
+                self.assertNotIn(configured, response["body"])
+        self.assertEqual(self.table.items, [])
+
+    def test_invalid_auth_configuration_or_headers_fail_closed(self):
+        for configured in (None, 123, "", "\ud800"):
+            self.firewall.API_SHARED_SECRET = configured
+            self.assertFalse(self.firewall.is_authorized(self._event({"prompt": "hello"})))
+        self.firewall.API_SHARED_SECRET = "a" * 32
+        for headers in (None, {}, {"x-api-key": "clé"}, {"x-api-key": ["a" * 32]}):
+            self.assertFalse(self.firewall.is_authorized({"headers": headers}))
+
+    def test_documented_role_example_and_ipv4_heuristic(self):
+        response = self.firewall.handler(
+            self._event({"prompt": "Pretend to be a friendly tour guide"}), None)
+        self.assertEqual(response["statusCode"], 403)
+        self.assertEqual(json.loads(response["body"])["attack_type"], "role_manipulation")
+        self.assertEqual(self.firewall.check_pii("Our server is at 10.0.0.1"), (True, "ip_address"))
 
     def _event(self, body, secret="a" * 32):
         return {
