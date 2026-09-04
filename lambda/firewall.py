@@ -10,7 +10,7 @@ Detection Categories:
 3. Role Manipulation - "you are now", "pretend to be", "act as"
 4. System Prompt Extraction - "show system prompt", "reveal instructions"
 5. Encoding Attacks - Base64 encoded malicious payloads
-6. PII Leakage - SSN, credit cards, emails being sent to LLM
+6. PII Patterns - SSN, credit cards, email, phone, IPv4-looking input (no LLM call)
 7. Excessive Length - Prompt length attacks
 
 Author: Nine Lives Zero Trust
@@ -54,7 +54,7 @@ def _unauthorized_response(message: str, status_code: int = 401) -> Dict[str, An
 
 
 def is_authorized(event: Dict[str, Any]) -> bool:
-    if not API_SHARED_SECRET:
+    if not isinstance(API_SHARED_SECRET, str) or not API_SHARED_SECRET:
         return False
 
     raw_headers = event.get('headers')
@@ -63,10 +63,15 @@ def is_authorized(event: Dict[str, Any]) -> bool:
     headers = {str(k).lower(): v for k, v in raw_headers.items()}
     api_key = headers.get('x-api-key')
 
-    if isinstance(api_key, str) and hmac.compare_digest(api_key, API_SHARED_SECRET):
-        return True
-
-    return False
+    if not isinstance(api_key, str):
+        return False
+    try:
+        # compare_digest only accepts ASCII str values. UTF-8 bytes preserve
+        # exact key identity (no normalization), including supported Unicode.
+        return hmac.compare_digest(api_key.encode('utf-8'), API_SHARED_SECRET.encode('utf-8'))
+    except UnicodeEncodeError:
+        # Malformed Unicode must be an ordinary rejection, never a logged key.
+        return False
 
 
 # =============================================================================
