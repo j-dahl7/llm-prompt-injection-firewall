@@ -155,7 +155,7 @@ resource "aws_apigatewayv2_api" "prompt_api" {
   description   = "LLM Prompt Injection Firewall API"
 
   cors_configuration {
-    allow_headers = ["Content-Type", "X-API-Key"]
+    allow_headers = ["Content-Type", "X-API-Key", "Authorization", "X-Amz-Date", "X-Amz-Security-Token", "X-Amz-Content-Sha256"]
     allow_methods = ["POST", "OPTIONS"]
     allow_origins = var.allowed_origins
     max_age       = 300
@@ -206,9 +206,10 @@ resource "aws_apigatewayv2_integration" "lambda" {
 }
 
 resource "aws_apigatewayv2_route" "prompt" {
-  api_id    = aws_apigatewayv2_api.prompt_api.id
-  route_key = "POST /prompt"
-  target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+  api_id             = aws_apigatewayv2_api.prompt_api.id
+  route_key          = "POST /prompt"
+  target             = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+  authorization_type = "AWS_IAM"
 }
 
 resource "aws_lambda_permission" "api_gateway" {

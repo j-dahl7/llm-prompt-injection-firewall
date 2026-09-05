@@ -9,6 +9,8 @@ on:
       - 'lambda/**'
       - 'terraform/**'
       - 'tests/**'
+      - 'scripts/**'
+      - 'requirements-client.lock'
   push:
     branches: [main]
     paths:
@@ -17,6 +19,8 @@ on:
       - 'lambda/**'
       - 'terraform/**'
       - 'tests/**'
+      - 'scripts/**'
+      - 'requirements-client.lock'
 
 permissions:
   contents: read
@@ -39,6 +43,9 @@ jobs:
         uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Install hash-locked signing client dependencies
+        run: python3 -m pip install --require-hashes -r requirements-client.lock
 
       - name: Run offline unit tests
         run: python3 -m unittest discover -s tests -v
