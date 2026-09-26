@@ -27,6 +27,10 @@ provider "aws" {
   region = var.aws_region
 }
 
+locals {
+  metric_namespace = "LLMFirewall/${var.project_name}"
+}
+
 # -----------------------------------------------------------------------------
 # Lambda Function - Prompt Injection Firewall
 # -----------------------------------------------------------------------------
@@ -51,12 +55,13 @@ resource "aws_lambda_function" "firewall" {
 
   environment {
     variables = {
-      ATTACK_LOG_TABLE  = aws_dynamodb_table.attack_logs.name
-      API_SHARED_SECRET = var.api_shared_secret
-      LOG_LEVEL         = "INFO"
-      BLOCK_MODE        = "true" # Set to "false" for detection-only mode
-      MAX_PROMPT_LENGTH = "4000"
-      ENABLE_PII_CHECK  = "true"
+      ATTACK_LOG_TABLE      = aws_dynamodb_table.attack_logs.name
+      ATTACK_RETENTION_DAYS = tostring(var.attack_retention_days)
+      API_SHARED_SECRET     = var.api_shared_secret
+      LOG_LEVEL             = "INFO"
+      BLOCK_MODE            = "true" # Set to "false" for detection-only mode
+      MAX_PROMPT_LENGTH     = "4000"
+      ENABLE_PII_CHECK      = "true"
     }
   }
 
@@ -179,6 +184,7 @@ resource "aws_apigatewayv2_stage" "default" {
     format = jsonencode({
       requestId      = "$context.requestId"
       ip             = "$context.identity.sourceIp"
+      callerArn      = "$context.identity.userArn"
       requestTime    = "$context.requestTime"
       httpMethod     = "$context.httpMethod"
       routeKey       = "$context.routeKey"
@@ -240,16 +246,9 @@ resource "aws_dynamodb_table" "attack_logs" {
     type = "S"
   }
 
-  attribute {
-    name = "attack_type"
-    type = "S"
-  }
-
-  global_secondary_index {
-    name            = "by-attack-type"
-    hash_key        = "attack_type"
-    range_key       = "timestamp"
-    projection_type = "ALL"
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
   }
 
   point_in_time_recovery {
@@ -267,12 +266,12 @@ resource "aws_dynamodb_table" "attack_logs" {
 # does not also call PutMetricData, which would double-count each request.
 resource "aws_cloudwatch_log_metric_filter" "blocked_attacks" {
   name           = "${var.project_name}-blocked"
-  pattern        = "{ $.blocked = true }"
+  pattern        = "{ $.blocked IS TRUE }"
   log_group_name = aws_cloudwatch_log_group.lambda_logs.name
 
   metric_transformation {
     name          = "BlockedAttacks"
-    namespace     = "LLMFirewall"
+    namespace     = local.metric_namespace
     value         = "1"
     default_value = "0"
   }
@@ -280,12 +279,12 @@ resource "aws_cloudwatch_log_metric_filter" "blocked_attacks" {
 
 resource "aws_cloudwatch_log_metric_filter" "allowed_prompts" {
   name           = "${var.project_name}-allowed"
-  pattern        = "{ $.blocked = false }"
+  pattern        = "{ $.blocked IS FALSE }"
   log_group_name = aws_cloudwatch_log_group.lambda_logs.name
 
   metric_transformation {
     name          = "AllowedPrompts"
-    namespace     = "LLMFirewall"
+    namespace     = local.metric_namespace
     value         = "1"
     default_value = "0"
   }
@@ -297,7 +296,7 @@ resource "aws_cloudwatch_metric_alarm" "attack_spike" {
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
   metric_name         = "BlockedAttacks"
-  namespace           = "LLMFirewall"
+  namespace           = local.metric_namespace
   period              = 300
   statistic           = "Sum"
   threshold           = 10
@@ -341,8 +340,8 @@ resource "aws_cloudwatch_dashboard" "firewall" {
           title  = "Blocked vs Allowed Prompts"
           region = var.aws_region
           metrics = [
-            ["LLMFirewall", "BlockedAttacks", { color = "#d62728", label = "Blocked" }],
-            ["LLMFirewall", "AllowedPrompts", { color = "#2ca02c", label = "Allowed" }]
+            [local.metric_namespace, "BlockedAttacks", { color = "#d62728", label = "Blocked" }],
+            [local.metric_namespace, "AllowedPrompts", { color = "#2ca02c", label = "Allowed" }]
           ]
           period = 300
           stat   = "Sum"

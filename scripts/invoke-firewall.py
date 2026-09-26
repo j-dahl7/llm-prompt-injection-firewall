@@ -35,8 +35,8 @@ def validate_endpoint(endpoint, api_id, region):
 
 def invoke(endpoint, api_id, region, prompt, secret, credentials, opener=None):
     validate_endpoint(endpoint, api_id, region)
-    if not isinstance(secret, str) or not 32 <= len(secret) <= 256 or not all(32 <= ord(ch) <= 126 for ch in secret):
-        raise ValueError("This portable client requires a 32-256 character printable ASCII lab secret")
+    if not isinstance(secret, str) or not 32 <= len(secret) <= 256 or not all(33 <= ord(ch) <= 126 for ch in secret):
+        raise ValueError("This portable client requires a 32-256 character printable ASCII lab secret without spaces")
     if not isinstance(prompt, str) or not 1 <= len(prompt) <= 10000:
         raise ValueError("Prompt must contain 1-10000 characters")
     body = json.dumps({"prompt": prompt}, ensure_ascii=False).encode("utf-8")
