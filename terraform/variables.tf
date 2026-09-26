@@ -58,9 +58,19 @@ variable "api_shared_secret" {
     condition = (
       length(var.api_shared_secret) >= 32 &&
       length(var.api_shared_secret) <= 256 &&
-      length(trimspace(var.api_shared_secret)) >= 32 &&
-      !can(regex("[\\r\\n]", var.api_shared_secret))
+      can(regex("^[!-~]+$", var.api_shared_secret))
     )
-    error_message = "api_shared_secret must be 32-256 non-whitespace characters and cannot contain line breaks."
+    error_message = "api_shared_secret must be 32-256 printable ASCII characters without spaces (code points 33-126)."
+  }
+}
+
+variable "attack_retention_days" {
+  description = "Days before new attack metadata expires; DynamoDB TTL deletion is asynchronous"
+  type        = number
+  default     = 14
+
+  validation {
+    condition     = var.attack_retention_days >= 1 && var.attack_retention_days <= 365 && floor(var.attack_retention_days) == var.attack_retention_days
+    error_message = "attack_retention_days must be a whole number between 1 and 365."
   }
 }

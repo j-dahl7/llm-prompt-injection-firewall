@@ -43,6 +43,7 @@ BLOCK_MODE = os.environ.get('BLOCK_MODE', 'true').lower() == 'true'
 MAX_PROMPT_LENGTH = int(os.environ.get('MAX_PROMPT_LENGTH', '4000'))
 ENABLE_PII_CHECK = os.environ.get('ENABLE_PII_CHECK', 'true').lower() == 'true'
 API_SHARED_SECRET = os.environ.get('API_SHARED_SECRET', '')
+ATTACK_RETENTION_DAYS = int(os.environ.get('ATTACK_RETENTION_DAYS', '14'))
 
 
 def _unauthorized_response(message: str, status_code: int = 401) -> Dict[str, Any]:
@@ -88,7 +89,8 @@ INJECTION_PATTERNS = {
         r'new\s+instructions?\s*[:=]',
     ],
     'jailbreak': [
-        r'\bDAN\b',  # "Do Anything Now" jailbreak
+        r'\bDAN\s+(mode|jailbreak)\b',
+        r'\bdo\s+anything\s+now\b',
         r'developer\s+mode',
         r'god\s+mode',
         r'sudo\s+mode',
@@ -101,7 +103,7 @@ INJECTION_PATTERNS = {
     'role_manipulation': [
         r'you\s+are\s+now\s+(?!going|about)',  # "you are now X" but not "you are now going to"
         r'pretend\s+(to\s+be|you\s+are)',
-        r'act\s+as\s+(if\s+you\s+are|a)',
+        r'\bact\s+as\s+(if\s+you\s+are\b|an?\b)',
         r'roleplay\s+as',
         r'simulate\s+being',
         r'from\s+now\s+on\s+you\s+are',
@@ -265,15 +267,20 @@ def analyze_prompt(prompt: str) -> Dict[str, Any]:
 # Attack Logging
 # =============================================================================
 
-def log_attack(attack_id: str, analysis: Dict[str, Any], source_ip: str, prompt_hash: str):
+def log_attack(attack_id: str, analysis: Dict[str, Any], source_ip: str,
+               prompt_hash: str, caller_arn: str, gateway_request_id: str):
     """Log blocked attack to DynamoDB for analysis."""
     try:
+        now = datetime.now(timezone.utc)
         attack_table.put_item(Item={
             'attack_id': attack_id,
-            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'timestamp': now.isoformat(),
+            'expires_at': int(now.timestamp()) + ATTACK_RETENTION_DAYS * 86400,
             'attack_type': analysis['attack_type'],
             'reason': analysis['reason'],
             'source_ip': source_ip,
+            'caller_arn': caller_arn,
+            'gateway_request_id': gateway_request_id,
             'prompt_hash': prompt_hash,  # Hash only, never store actual prompts
             'details': analysis['details'],
         })
@@ -337,12 +344,32 @@ def handler(event, context):
             'body': json.dumps({'error': 'prompt must be a non-empty string'})
         }
 
+    try:
+        prompt_bytes = prompt.encode('utf-8')
+    except UnicodeEncodeError:
+        # JSON permits escaped lone surrogates; they are not valid UTF-8 input.
+        # Reject before screening/fingerprinting without logging prompt data.
+        return {
+            'statusCode': 400,
+            'headers': {'Content-Type': 'application/json'},
+            'body': json.dumps({'error': 'prompt must contain valid Unicode'})
+        }
+
     # Get source IP for logging
     request_context = event.get('requestContext')
     request_context = request_context if isinstance(request_context, dict) else {}
     http_context = request_context.get('http')
     http_context = http_context if isinstance(http_context, dict) else {}
     source_ip = str(http_context.get('sourceIp', 'unknown'))[:64]
+    # Only Gateway's IAM context supplies attribution; client headers do not.
+    authorizer = request_context.get('authorizer')
+    authorizer = authorizer if isinstance(authorizer, dict) else {}
+    iam = authorizer.get('iam')
+    iam = iam if isinstance(iam, dict) else {}
+    caller_arn = iam.get('userArn')
+    caller_arn = caller_arn[:2048] if isinstance(caller_arn, str) else 'unknown'
+    gateway_request_id = request_context.get('requestId')
+    gateway_request_id = gateway_request_id[:128] if isinstance(gateway_request_id, str) else 'unknown'
 
     # Analyze prompt
     analysis = analyze_prompt(prompt)
@@ -351,7 +378,7 @@ def handler(event, context):
     # a plain hash that is easy to precompute for low-entropy input.
     prompt_hash = hmac.new(
         API_SHARED_SECRET.encode('utf-8'),
-        prompt.encode('utf-8'),
+        prompt_bytes,
         hashlib.sha256,
     ).hexdigest()[:16]
 
@@ -363,13 +390,15 @@ def handler(event, context):
         'attack_type': analysis['attack_type'],
         'reason': analysis['reason'],
         'source_ip': source_ip,
+        'caller_arn': caller_arn,
+        'gateway_request_id': gateway_request_id,
         'prompt_length': len(prompt),
     }
     logger.info('prompt_screening_result', extra=log_entry)
 
     if analysis['blocked']:
         # Log attack to DynamoDB
-        log_attack(request_id, analysis, source_ip, prompt_hash)
+        log_attack(request_id, analysis, source_ip, prompt_hash, caller_arn, gateway_request_id)
         if BLOCK_MODE:
             return {
                 'statusCode': 403,

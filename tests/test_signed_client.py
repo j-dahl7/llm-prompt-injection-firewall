@@ -50,6 +50,14 @@ class SignedClientTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'redirects are refused'):
             client.NoRedirect().redirect_request(None, None, 302, '', {}, 'https://attacker.example/')
 
+    def test_secrets_with_spaces_unicode_or_controls_never_reach_transport(self):
+        opener = Mock()
+        for secret in (' ' + 'x' * 32, 'x' * 16 + ' ' + 'x' * 16, 'x' * 32 + ' ',
+                       'clé' * 16, 'x' * 32 + '\t', 'x' * 31, 'x' * 257):
+            with self.subTest(secret_length=len(secret)), self.assertRaises(ValueError):
+                client.invoke(self.endpoint, 'abc123def4', 'us-east-1', 'Hello', secret, None, opener)
+        opener.open.assert_not_called()
+
     def test_gateway_requires_iam_and_only_grants_lambda_invocation_for_the_prompt_route(self):
         terraform = (ROOT / 'terraform/main.tf').read_text()
         self.assertIn('authorization_type = "AWS_IAM"', terraform)

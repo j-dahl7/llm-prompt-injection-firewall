@@ -74,7 +74,7 @@ per request feeds the two metric filters without duplicate metric emission.
 - **AWS provider 5.100.0** and **Archive provider 2.8.0**, selected and
   checksum-verified by the committed dependency lock
 - **AWS CLI** configured (`aws configure`)
-- **Python 3.10+** and the hash-locked signed test client
+- **Python 3.12** and the hash-locked signed test client (the tested runtime)
 - One or more explicit trusted browser origins
 - A random shared API secret of at least 32 characters
 
@@ -206,7 +206,17 @@ python ../scripts/invoke-firewall.py --prompt "My SSN is 123-45-6789, can you re
 terraform output -raw dashboard_url
 ```
 
-Shows blocked vs allowed metrics and recent attack logs.
+Shows blocked vs allowed metrics and recent attack logs. Custom metrics use
+`LLMFirewall/<project_name>` so separate projects do not combine their counts.
+An existing deployment starts new metric history in this namespace; old
+`LLMFirewall` data remains subject to CloudWatch's retention policy.
+
+The metric filters use the [documented JSON boolean operators](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/FilterAndPatternSyntax.html)
+`IS TRUE` and `IS FALSE`. The dashboard's Logs Insights query separately uses
+`blocked = true`. Before relying on an AWS deployment, use the CloudWatch
+console's filter tester with one allowed and one blocked structured event,
+then confirm each corresponding metric increments once. Offline tests and
+Terraform validation do not prove live log ingestion or metric delivery.
 
 ### DynamoDB Table
 
@@ -226,10 +236,11 @@ Required Terraform inputs:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `allowed_origins` | none | Non-empty list of exact HTTPS origins; HTTP only for `localhost`/`127.0.0.1` |
-| `api_shared_secret` | none | Sensitive 32-256 character string without line breaks; accepted in `X-API-Key` |
+| `api_shared_secret` | none | Sensitive 32-256 printable ASCII characters without spaces (33-126); accepted in `X-API-Key` |
 
 Optional Terraform inputs are `project_name` (default `llm-firewall`),
-`aws_region` (default `us-east-1`), and `tags`.
+`aws_region` (default `us-east-1`), `tags`, and `attack_retention_days`
+(default 14; whole number from 1 to 365).
 
 Lambda settings currently declared in `main.tf`:
 
@@ -311,25 +322,51 @@ vulnerable to reformulation, multilingual inputs, Unicode tricks, and novel
 attacks. Layer it with model/provider guardrails, least privilege, isolation,
 human approval for consequential actions, and monitoring.
 
+The examples distinguish the ordinary name Dan and substrings such as
+"contract as a whole" from `DAN mode`, `do anything now`, and `act as a`.
+Legitimate role-play requests can still trigger this deliberately broad lab
+heuristic. A matching keyword is not proof of malicious intent.
+
 ### What Gets Logged
 
 - **Attack ID** - Unique identifier for correlation
 - **Attack Type** - Category of detected attack
 - **Reason** - Human-readable explanation
 - **Source IP** - For threat intelligence
+- **Caller ARN / Gateway request ID** - IAM attribution from Gateway's request
+  context, also recorded in API access logs; no client header supplies identity
 - **Prompt Fingerprint** - Keyed HMAC-SHA256 truncated to 16 hex characters
   (never the actual prompt or a plain precomputable hash)
 
-The source IP is also retained for the lab's investigation view. Treat the
-DynamoDB table and CloudWatch logs as security-sensitive telemetry, restrict
-access, and remove the lab when the exercise is complete.
+The source IP and caller ARN are security-sensitive telemetry. Restrict access
+to the table and log groups. New DynamoDB records expire after
+`attack_retention_days` (14 by default); TTL deletion is asynchronous and can
+take several days. Existing records without `expires_at` do not automatically
+expire. Changing the retention setting affects new records only. CloudWatch
+log groups retain 14 days; DynamoDB point-in-time recovery can preserve earlier
+data for up to 35 days. TTL does not erase backups, exports, or state history.
+This revision removes the unused `by-attack-type` index; the supplied viewer
+uses a table scan. Review any outside queries and the Terraform plan before
+upgrading an existing deployment.
+
+Caller attribution is trustworthy for the configured IAM-authorized Gateway
+path. A principal allowed to invoke Lambda directly can construct a synthetic
+event; the handler does not treat those fields as an additional authorization
+check. The fingerprint reuses the API secret, so anyone who can retrieve that
+secret from Terraform state or Lambda configuration can compute candidate
+fingerprints. It is correlation metadata, not anonymization or an independent
+cryptographic trust boundary. Use an isolated lab secret and remove the lab
+when the exercise ends.
 
 ## Local Validation
 
 Authentication compares exact UTF-8 key bytes with `hmac.compare_digest`;
 malformed/non-string headers are rejected without recording the key. This
 defines the handler's behavior, not a guarantee that every edge client accepts
-non-ASCII HTTP headers. Generated ASCII secrets remain the portable choice.
+non-ASCII HTTP headers. New Terraform inputs and the portable client require
+printable ASCII without spaces. Existing manually configured Unicode keys keep
+their exact-byte handler behavior. Lone surrogates in prompts receive HTTP 400
+before analysis, logging, or DynamoDB storage.
 
 These checks do not deploy or mutate AWS resources:
 
