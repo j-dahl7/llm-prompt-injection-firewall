@@ -57,11 +57,11 @@ resource "aws_lambda_function" "firewall" {
     variables = {
       ATTACK_LOG_TABLE      = aws_dynamodb_table.attack_logs.name
       ATTACK_RETENTION_DAYS = tostring(var.attack_retention_days)
-      API_SHARED_SECRET    = var.api_shared_secret
-      LOG_LEVEL            = "INFO"
-      BLOCK_MODE           = "true" # Set to "false" for detection-only mode
-      MAX_PROMPT_LENGTH    = "4000"
-      ENABLE_PII_CHECK     = "true"
+      API_SHARED_SECRET     = var.api_shared_secret
+      LOG_LEVEL             = "INFO"
+      BLOCK_MODE            = "true" # Set to "false" for detection-only mode
+      MAX_PROMPT_LENGTH     = "4000"
+      ENABLE_PII_CHECK      = "true"
     }
   }
 
