@@ -4,6 +4,7 @@ import hmac
 import importlib
 import json
 import os
+import re
 import sys
 import types
 import unittest
@@ -217,6 +218,35 @@ class FirewallTests(unittest.TestCase):
         serialized_item = json.dumps(stored_item)
         self.assertNotIn(decoded_payload, serialized_item)
         self.assertNotIn(encoded_payload, serialized_item)
+
+    def test_documented_examples_return_the_documented_decision(self):
+        # Categories are checked in a fixed order, so an example can match an
+        # earlier category than the one its heading names.
+        lab_root = Path(__file__).resolve().parents[1]
+        readme = (lab_root / "README.md").read_text(encoding="utf-8")
+        blocked = re.findall(
+            r'--prompt "([^"]+)"\n```\n\n\*\*Expected:\*\* `403 Forbidden` '
+            r'with `"attack_type": "([a-z_]+)"`',
+            readme,
+        )
+        self.assertEqual(
+            [attack_type for _prompt, attack_type in blocked],
+            ["instruction_override", "jailbreak", "role_manipulation", "pii_ssn"],
+        )
+        for prompt, attack_type in blocked:
+            with self.subTest(prompt=prompt):
+                analysis = self.firewall.analyze_prompt(prompt)
+                self.assertTrue(analysis["blocked"])
+                self.assertEqual(analysis["attack_type"], attack_type)
+
+        allowed = re.search(r'--prompt "([^"]+)"\n```\n\n\*\*Expected:\*\* `200 OK`', readme)
+        self.assertIsNotNone(allowed)
+        self.assertFalse(self.firewall.analyze_prompt(allowed.group(1))["blocked"])
+
+        outputs = (lab_root / "terraform" / "outputs.tf").read_text(encoding="utf-8")
+        for prompt in re.findall(r'--prompt "([^"]+)"', outputs):
+            with self.subTest(output_prompt=prompt):
+                self.assertIn(f'--prompt "{prompt}"', readme)
 
     def test_terraform_contracts_include_secret_header_throttling_and_validation(self):
         lab_root = Path(__file__).resolve().parents[1]
