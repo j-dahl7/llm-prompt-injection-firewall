@@ -15,11 +15,19 @@ patterns and returns an allow/block JSON decision. It addresses
 
 ## Validation Boundary
 
-The August 13, 2026 revision passed all 11 offline Python tests plus Terraform
-formatting, initialization with the locked providers, and static validation. It
-was not deployed to AWS and no live API Gateway, Lambda, DynamoDB, CloudWatch,
-CORS, or model-backend request was tested for this revision. Regex screening is
-an educational control, not a complete prompt-injection defense or a production
+Offline checks only. On November 13, 2026 this revision passed all 24 offline
+Python tests (19 in `tests/test_firewall.py`, 5 in
+`tests/test_signed_client.py`) on Python 3.12 with the hash-locked client
+dependencies. Terraform was not run again for this revision: its Terraform
+files and dependency lock are unchanged from commit `1fcc37b`, whose workflow
+run the same day (Ubuntu 24.04, Linux x86-64, Terraform 1.14.9) passed the
+same tests plus formatting, `terraform init -lockfile=readonly`, and static
+validation. The workflow runs Terraform only on Linux x86-64, and the lock has
+`h1:` package hashes for only two platforms; see
+[Provider Lock and Platforms](#provider-lock-and-platforms). Nothing was
+deployed to AWS and no live API Gateway, Lambda, DynamoDB, CloudWatch, CORS, or
+model-backend request was tested for this revision. Regex screening is an
+educational control, not a complete prompt-injection defense or a production
 security boundary.
 
 ## The Problem
@@ -72,7 +80,9 @@ per request feeds the two metric filters without duplicate metric emission.
   API Gateway, IAM, DynamoDB, and CloudWatch resources
 - **[Terraform](https://developer.hashicorp.com/terraform/install)** >= 1.0
 - **AWS provider 5.100.0** and **Archive provider 2.8.0**, selected and
-  checksum-verified by the committed dependency lock
+  checksum-verified by the committed dependency lock; outside Linux x86-64 the
+  lock may need one extra step (see
+  [Provider Lock and Platforms](#provider-lock-and-platforms))
 - **AWS CLI** configured (`aws configure`)
 - **Python 3.12** and the hash-locked signed test client (the tested runtime)
 - One or more explicit trusted browser origins
@@ -88,10 +98,14 @@ CORS is a browser-origin control. The HTTP API now requires AWS IAM/SigV4 author
 llm-prompt-injection-firewall/
 ├── .github/workflows/validate.yml # Offline tests and lock-aware Terraform validation
 ├── .terraform-version       # Reviewed Terraform CLI version (1.14.9)
+├── requirements-client.lock # Hash-locked dependencies of the signed test client
 ├── lambda/
 │   └── firewall.py         # Detection logic and Lambda handler
+├── scripts/
+│   └── invoke-firewall.py  # SigV4-signed test client for this checkout's API
 ├── tests/
-│   └── test_firewall.py    # Auth, redaction, detection, and IaC contracts
+│   ├── test_firewall.py    # Auth, redaction, detection, and IaC contracts
+│   └── test_signed_client.py # SigV4 signing, destination, secret, redirect, and IAM-route checks
 └── terraform/
     ├── .terraform.lock.hcl # Exact provider versions and signed checksums
     ├── main.tf             # Lambda, API Gateway, DynamoDB, CloudWatch
@@ -116,6 +130,9 @@ export TF_VAR_allowed_origins='["https://app.example.com"]'
 # outside the repository, and do not reuse a production credential.
 export TF_VAR_api_shared_secret='<random-32+-character-lab-secret>'
 
+# If init prints "Provider lock file not updated", the committed lock has no
+# h1: hash for your platform. Follow "Provider Lock and Platforms" below
+# before you run plan.
 terraform init -lockfile=readonly
 terraform plan -out=tfplan
 terraform apply tfplan
@@ -130,6 +147,63 @@ Although Terraform marks `api_shared_secret` as sensitive, the value is still
 stored in Terraform state because it becomes a Lambda environment variable.
 Use an encrypted, access-controlled, versioned/locked remote state backend for
 shared work. Do not commit local state or plan files.
+
+### Provider Lock and Platforms
+
+`-lockfile=readonly` makes `terraform init` verify each provider package
+against the checksums already recorded in `.terraform.lock.hcl` and stops it
+from rewriting that file. The lock records two kinds of checksum:
+
+- `zh:` is the SHA-256 of a release `.zip`. The lock has one for every file in
+  HashiCorp's signed `SHA256SUMS` for AWS provider 5.100.0 (14 platforms) and
+  Archive provider 2.8.0 (12 platforms), so `init` verifies the download on
+  every platform those releases support.
+- `h1:` is a hash of the package contents. `validate`, `plan`, `apply`, and
+  `destroy` use it to re-check the unpacked provider in
+  `.terraform/providers`, which a `zh:` checksum cannot do. The lock has only
+  two `h1:` hashes per provider, enough for two platforms. Terraform does not
+  label them; the repository workflow shows that one is `linux_amd64`.
+
+Adding more `zh:` checksums would not change this, and an `h1:` hash can only
+be calculated from the provider package itself. Until the lock carries `h1:`
+hashes for more platforms, readers elsewhere need the one-time step below.
+
+On a platform without its `h1:` hash, `terraform init -lockfile=readonly` still
+succeeds but prints `Warning: Provider lock file not updated`, and the next
+`validate`, `plan`, or `apply` stops because the cached package `does not match
+any of the checksums recorded in the dependency lock file`. If you see that
+warning, record the hash for your platform once:
+
+```bash
+terraform init                    # this once, without -lockfile=readonly
+git diff -- .terraform.lock.hcl   # expect one added h1: line per provider
+```
+
+Plain `terraform init` still checks the download against the committed `zh:`
+checksums and fails if none matches; it adds an `h1:` hash only for a package
+that passed that check. If the diff shows anything other than one new `h1:`
+line under each provider, stop and investigate. From then on
+`terraform init -lockfile=readonly` runs without the warning on that platform.
+
+`terraform providers lock -platform=<os>_<arch>` (for example `darwin_arm64`,
+`linux_arm64`, or `windows_amd64`) records the same hash for any platform,
+including one you are not on, such as a teammate's laptop or an ARM runner. It
+downloads the packages into a temporary directory and deletes them afterwards,
+so run `terraform init -lockfile=readonly` once you have reviewed the diff the
+same way. That command checks each download against HashiCorp's signature but
+not against the checksums already in the lock, so the diff review is the only
+check that the registry served the packages this repository reviewed.
+
+This follows HashiCorp's Terraform v1.14.x documentation for the
+[dependency lock file](https://developer.hashicorp.com/terraform/language/v1.14.x/files/dependency-lock#new-provider-package-checksums),
+[`terraform init -lockfile`](https://developer.hashicorp.com/terraform/cli/v1.14.x/commands/init#lockfile-mode),
+and [`terraform providers lock`](https://developer.hashicorp.com/terraform/cli/v1.14.x/commands/providers/lock),
+and the Terraform 1.14.9 source for the
+[cached-package check](https://github.com/hashicorp/terraform/blob/v1.14.9/internal/command/meta_providers.go#L332-L349)
+and the
+[`providers lock` install mode](https://github.com/hashicorp/terraform/blob/v1.14.9/internal/providercache/installer.go#L745-L748).
+The workflow runs Terraform only on Linux x86-64, so this behavior on other
+platforms was not reproduced.
 
 ### Save the Endpoint
 
@@ -376,6 +450,13 @@ terraform fmt -check -recursive terraform
 terraform -chdir=terraform init -backend=false -input=false -lockfile=readonly
 terraform -chdir=terraform validate
 ```
+
+On a platform whose `h1:` hash is not in the lock, that `init` prints
+`Provider lock file not updated` and `validate` then fails. Follow
+[Provider Lock and Platforms](#provider-lock-and-platforms); from the
+repository root the two commands are
+`terraform -chdir=terraform init -backend=false -input=false` and
+`git diff -- terraform/.terraform.lock.hcl`.
 
 ---
 
